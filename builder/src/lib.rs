@@ -52,6 +52,12 @@ fn vec_inner_type(ty: &Type) -> Option<&Type> {
     }
 }
 
+fn has_builder_attr(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .any(|attr| matches!(&attr.meta, Meta::List(MetaList { path, .. }) if path.is_ident("builder")))
+}
+
 #[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -68,7 +74,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let bidents = sfields.iter().map(|f| {
         let name = &f.ident;
         let ty = &f.ty;
-        if option_inner_type(&f.ty).is_some() || vec_inner_type(&f.ty).is_some() {
+        if option_inner_type(&f.ty).is_some() || (vec_inner_type(&f.ty).is_some() && has_builder_attr(&f.attrs)) {
             quote! { #name: #ty, }
         } else {
             quote! { #name: std::option::Option<#ty>, }
@@ -77,7 +83,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let bempty = sfields.iter().map(|f| {
         let name = &f.ident;
-        if vec_inner_type(&f.ty).is_some() {
+        if vec_inner_type(&f.ty).is_some() && has_builder_attr(&f.attrs) {
             quote! { #name: Vec::new(), }
         } else {
             quote! { #name: None, }
@@ -86,7 +92,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let bfields = sfields.iter().map(|f| {
         let name = &f.ident;
-        if option_inner_type(&f.ty).is_some() || vec_inner_type(&f.ty).is_some() {
+        if option_inner_type(&f.ty).is_some() || (vec_inner_type(&f.ty).is_some() && has_builder_attr(&f.attrs)) {
             quote! { #name: self.#name.clone(), }
         } else {
             quote! { #name: self.#name.as_ref().ok_or_else(|| concat!(stringify!(#name), " is missing")).cloned()?, }
