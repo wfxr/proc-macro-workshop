@@ -18,36 +18,19 @@ use syn::{
     TypePath,
 };
 
-fn option_inner_type(ty: &Type) -> Option<&Type> {
+fn inner_type(ty: &Type) -> Option<(&proc_macro2::Ident, &Type)> {
     match ty {
-        Type::Path(TypePath { path: Path { segments, .. }, .. }) if segments.len() == 1 => match &segments[0] {
-            PathSegment { ident, arguments } if ident == "Option" => match arguments {
+        Type::Path(TypePath { path: Path { segments, .. }, .. }) if segments.len() == 1 => {
+            let PathSegment { ident: wrapper_ident, arguments } = &segments[0];
+            match arguments {
                 PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }) if args.len() == 1 =>
                     match &args[0] {
-                        GenericArgument::Type(inner_ty) => Some(inner_ty),
+                        GenericArgument::Type(inner_ty) => Some((wrapper_ident, inner_ty)),
                         _ => None,
                     },
                 _ => None,
-            },
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn vec_inner_type(ty: &Type) -> Option<&Type> {
-    match ty {
-        Type::Path(TypePath { path: Path { segments, .. }, .. }) if segments.len() == 1 => match &segments[0] {
-            PathSegment { ident, arguments } if ident == "Vec" => match arguments {
-                PathArguments::AngleBracketed(AngleBracketedGenericArguments { args, .. }) if args.len() == 1 =>
-                    match &args[0] {
-                        GenericArgument::Type(inner_ty) => Some(inner_ty),
-                        _ => None,
-                    },
-                _ => None,
-            },
-            _ => None,
-        },
+            }
+        }
         _ => None,
     }
 }
@@ -74,78 +57,108 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let bidents = sfields.iter().map(|f| {
         let name = &f.ident;
         let ty = &f.ty;
-        if option_inner_type(&f.ty).is_some() || (vec_inner_type(&f.ty).is_some() && has_builder_attr(&f.attrs)) {
-            quote! { #name: #ty, }
-        } else {
-            quote! { #name: std::option::Option<#ty>, }
+        match inner_type(&f.ty) {
+            Some((ident, _)) if ident == "Option" => {
+                quote! { #name: #ty, }
+            }
+            Some((ident, _)) if ident == "Vec" && has_builder_attr(&f.attrs) => {
+                quote! { #name: #ty, }
+            }
+            _ => {
+                quote! { #name: std::option::Option<#ty>, }
+            }
         }
     });
 
     let bempty = sfields.iter().map(|f| {
         let name = &f.ident;
-        if vec_inner_type(&f.ty).is_some() && has_builder_attr(&f.attrs) {
-            quote! { #name: Vec::new(), }
-        } else {
-            quote! { #name: None, }
+        match inner_type(&f.ty) {
+            Some((ident, _)) if ident == "Vec" && has_builder_attr(&f.attrs) => {
+                quote! { #name: Vec::new(), }
+            }
+            _ => {
+                quote! { #name: None, }
+            }
         }
     });
 
     let bfields = sfields.iter().map(|f| {
         let name = &f.ident;
-        if option_inner_type(&f.ty).is_some() || (vec_inner_type(&f.ty).is_some() && has_builder_attr(&f.attrs)) {
-            quote! { #name: self.#name.clone(), }
-        } else {
-            quote! { #name: self.#name.as_ref().ok_or_else(|| concat!(stringify!(#name), " is missing")).cloned()?, }
+        match inner_type(&f.ty) {
+            Some((ident, _)) if ident == "Option" => {
+                quote! { #name: self.#name.clone(), }
+            }
+            Some((ident, _)) if ident == "Vec" && has_builder_attr(&f.attrs) => {
+                quote! { #name: self.#name.clone(), }
+            }
+            _ => {
+                quote! { #name: self.#name.as_ref().ok_or_else(|| concat!(stringify!(#name), " is missing")).cloned()?, }
+            }
         }
     });
 
     let bmethods = sfields.iter().flat_map(|f| {
         let name = &f.ident;
-        let ty = option_inner_type(&f.ty).unwrap_or(&f.ty);
-
-        use proc_macro2::TokenTree::*;
-        let mut methods: Vec<_> = f
-            .attrs
-            .iter()
-            .map(|attr| match &attr.meta {
-                Meta::List(MetaList { path, tokens, .. }) if path.is_ident("builder") => {
-                    let mut iter = tokens.clone().into_iter();
-                    match (iter.next(), iter.next(), iter.next(), iter.next()) {
-                        (Some(Ident(ident)), Some(Punct(punct)), Some(Literal(val)), None) => {
-                            assert_eq!(ident, "each");
-                            assert_eq!(punct.as_char(), '=');
-                            let fnname = val.to_string().trim_matches('"').to_string();
-                            let fnname = syn::Ident::new(&fnname, val.span());
-                            let name = name.clone();
-                            let ty = ty.clone();
-                            match vec_inner_type(&ty) {
-                                Some(ty) => {
-                                    quote! {
-                                        pub fn #fnname(&mut self, #fnname: #ty) -> &mut Self {
-                                            self.#name.push(#fnname);
-                                            self
-                                        }
+        let ty = &f.ty;
+        match inner_type(ty) {
+            Some((wrapper, inner_ty)) if wrapper == "Vec" => {
+                use proc_macro2::TokenTree::*;
+                let methods: Vec<_> = f
+                    .attrs
+                    .iter()
+                    .filter(|attr| attr.path().is_ident("builder"))
+                    .map(|attr| match &attr.meta {
+                        Meta::List(MetaList { tokens, .. }) => tokens,
+                        _ => panic!("Invalid syntax: {:#?}", attr.meta),
+                    })
+                    .map(|tokens| {
+                        let mut iter = tokens.clone().into_iter();
+                        match (iter.next(), iter.next(), iter.next(), iter.next()) {
+                            (Some(Ident(ident)), Some(Punct(punct)), Some(Literal(lit)), None) => {
+                                assert_eq!(ident, "each");
+                                assert_eq!(punct.as_char(), '=');
+                                let fnname = match syn::Lit::new(lit) {
+                                    syn::Lit::Str(lit) => syn::Ident::new(&lit.value(), lit.span()),
+                                    _ => panic!("Invalid syntax: {:#?}", tokens),
+                                };
+                                quote! {
+                                    pub fn #fnname(&mut self, #fnname: #inner_ty) -> &mut Self {
+                                        self.#name.push(#fnname);
+                                        self
                                     }
                                 }
-                                None => panic!("Invalid syntax"),
                             }
+                            _ => panic!("Invalid syntax: {:#?}", tokens),
                         }
-                        _ => panic!("Invalid syntax"),
+                    })
+                    .collect();
+                match methods.is_empty() {
+                    true => vec![quote! {
+                        pub fn #name(&mut self, #name: #ty) -> &mut Self {
+                            self.#name = Some(#name);
+                            self
+                        }
+                    }],
+                    false => methods,
+                }
+            }
+            Some((wrapper, inner_ty)) if wrapper == "Option" => {
+                vec![quote! {
+                    pub fn #name(&mut self, #name: #inner_ty) -> &mut Self {
+                        self.#name = Some(#name);
+                        self
                     }
-                }
-                _ => quote! {},
-            })
-            .collect();
-
-        if methods.is_empty() {
-            methods.push(quote! {
-                pub fn #name(&mut self, #name: #ty) -> &mut Self {
-                    self.#name = Some(#name);
-                    self
-                }
-            });
+                }]
+            }
+            _ => {
+                vec![quote! {
+                    pub fn #name(&mut self, #name: #ty) -> &mut Self {
+                        self.#name = Some(#name);
+                        self
+                    }
+                }]
+            }
         }
-        methods
     });
 
     let expanded = quote! {
@@ -163,7 +176,6 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
         impl #bname {
             #(#bmethods)*
-            // #(#bmethods)*
 
             pub fn build(&mut self) -> Result<#sname, Box<dyn std::error::Error>> {
                 Ok(#sname {

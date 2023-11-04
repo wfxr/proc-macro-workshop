@@ -10,11 +10,11 @@ use derive_builder::Builder;
 
 #[derive(Builder)]
 pub struct Command {
-    executable: String,
+    executable:  String,
     #[builder(each = "arg")]
-    args: Vec<String>,
+    args:        Vec<String>,
     #[builder(each = "env")]
-    env: Vec<String>,
+    env:         Vec<String>,
     current_dir: Option<String>,
 }
 
