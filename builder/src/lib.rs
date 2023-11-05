@@ -1,3 +1,4 @@
+use indoc::formatdoc;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
@@ -52,7 +53,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let sfields = match input.data {
         Data::Struct(DataStruct { fields: Fields::Named(FieldsNamed { named, .. }), .. }) => named,
-        _ => unreachable!(),
+        _ => unimplemented!(),
     };
 
     let bidents = sfields.iter().map(|f| {
@@ -155,7 +156,14 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
     });
 
+    let builder_doc_title = formatdoc! {"
+        Implementation the [builder pattern] for [`{sname}`].
+
+        [builder pattern]: https://doc.rust-lang.org/1.0.0/style/ownership/builders.html
+    "};
+
     let expanded = quote! {
+        #[doc = #builder_doc_title]
         pub struct #bname {
             #(#bidents)*
         }
