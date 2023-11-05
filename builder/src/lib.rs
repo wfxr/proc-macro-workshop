@@ -58,44 +58,31 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let bidents = sfields.iter().map(|f| {
         let name = &f.ident;
         let ty = &f.ty;
-        match inner_type(&f.ty) {
-            Some((ident, _)) if ident == "Option" => {
-                quote! { #name: #ty, }
-            }
-            Some((ident, _)) if ident == "Vec" && has_builder_attr(&f.attrs) => {
-                quote! { #name: #ty, }
-            }
-            _ => {
-                quote! { #name: ::std::option::Option<#ty>, }
-            }
-        }
+        let ty = match inner_type(ty) {
+            Some((ident, _)) if ident == "Option" => quote! { #ty },
+            Some((ident, _)) if ident == "Vec" && has_builder_attr(&f.attrs) => quote! { #ty },
+            _ => quote! { ::std::option::Option<#ty> },
+        };
+        quote! { #name: #ty, }
     });
 
     let bempty = sfields.iter().map(|f| {
         let name = &f.ident;
-        match inner_type(&f.ty) {
-            Some((ident, _)) if ident == "Vec" && has_builder_attr(&f.attrs) => {
-                quote! { #name: ::std::vec::Vec::new(), }
-            }
-            _ => {
-                quote! { #name: ::std::option::Option::None, }
-            }
-        }
+        let ty = match inner_type(&f.ty) {
+            Some((ident, _)) if ident == "Vec" && has_builder_attr(&f.attrs) => quote! { ::std::vec::Vec::new() },
+            _ => quote! { ::std::option::Option::None },
+        };
+        quote! { #name: #ty, }
     });
 
     let bfields = sfields.iter().map(|f| {
         let name = &f.ident;
-        match inner_type(&f.ty) {
-            Some((ident, _)) if ident == "Option" => {
-                quote! { #name: self.#name.clone(), }
-            }
-            Some((ident, _)) if ident == "Vec" && has_builder_attr(&f.attrs) => {
-                quote! { #name: self.#name.clone(), }
-            }
-            _ => {
-                quote! { #name: self.#name.as_ref().ok_or_else(|| concat!(stringify!(#name), " is missing")).cloned()?, }
-            }
-        }
+        let val = match inner_type(&f.ty) {
+            Some((ident, _)) if ident == "Option" => quote! { self.#name.clone() },
+            Some((ident, _)) if ident == "Vec" && has_builder_attr(&f.attrs) => quote! { self.#name.clone() },
+            _ => quote! { self.#name.as_ref().ok_or_else(|| concat!(stringify!(#name), " is missing")).cloned()? },
+        };
+        quote! { #name: #val, }
     });
 
     let bmethods = sfields.iter().flat_map(|f| {
@@ -120,12 +107,9 @@ pub fn derive(input: TokenStream) -> TokenStream {
                         tokens.and_then(|(tokens, gen_error)| {
                             let mut iter = tokens.clone().into_iter();
                             match (iter.next(), iter.next(), iter.next(), iter.next()) {
-                                (Some(Ident(ident)), Some(Punct(punct)), Some(Literal(lit)), None) => {
-                                    if ident != "each" || punct.as_char() != '=' {
-                                        return Err(gen_error());
-                                    }
+                                (Some(Ident(ident)), Some(Punct(punct)), Some(Literal(lit)), None) =>
                                     match syn::Lit::new(lit) {
-                                        syn::Lit::Str(lit) => {
+                                        syn::Lit::Str(lit) if ident == "each" && punct.as_char() == '=' => {
                                             let fnname = syn::Ident::new(&lit.value(), lit.span());
                                             Ok(quote! {
                                                 pub fn #fnname(&mut self, #fnname: #inner_ty) -> &mut Self {
@@ -135,8 +119,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                                             })
                                         }
                                         _ => Err(gen_error()),
-                                    }
-                                }
+                                    },
                                 _ => Err(gen_error()),
                             }
                         })
